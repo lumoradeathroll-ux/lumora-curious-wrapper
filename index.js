@@ -4,6 +4,15 @@ import { URL } from 'node:url';
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '127.0.0.1';
 
+// Public trackers to append to magnets so Lumora can actually download
+const TRACKERS = [
+    'udp://tracker.opentrackr.org:1337/announce',
+    'udp://open.stealth.si:80/announce',
+    'udp://tracker.torrent.eu.org:451/announce',
+    'udp://tracker.bittor.pw:1337/announce',
+    'udp://tracker.dler.org:6969/announce'
+];
+
 const MANAGER = {
     enableCurious: process.env.ENABLE_CURIOUS !== 'false',
     enableStremio: process.env.ENABLE_STREMIO !== 'false',
@@ -13,13 +22,11 @@ const MANAGER = {
 const server = http.createServer(async (req, res) => {
     const parsedUrl = new URL(req.url, `http://${req.headers.host}`);
     
-    // 1. Health Check
     if (parsedUrl.pathname === '/health') {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         return res.end('OK');
     }
 
-    // 2. Resolve Endpoint
     if (parsedUrl.pathname === '/lumora/v1/resolve') {
         const q = parsedUrl.searchParams;
         const type = q.get('type');
@@ -34,7 +41,6 @@ const server = http.createServer(async (req, res) => {
 
         try {
             const promises = [];
-            
             if (MANAGER.enableCurious) {
                 promises.push(getCuriousSources(imdb, type, season, episode));
             }
@@ -44,36 +50,32 @@ const server = http.createServer(async (req, res) => {
 
             const results = await Promise.allSettled(promises);
             let allSources = [];
-            
             for (const r of results) {
                 if (r.status === 'fulfilled' && Array.isArray(r.value)) {
                     allSources.push(...r.value);
                 }
             }
 
-            // Deduplicate by URL
             const unique = Array.from(new Map(allSources.map(s => [s.url, s])).values());
-            
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ sources: unique }));
-            
         } catch (e) {
             res.writeHead(500, { 'Content-Type': 'application/json' }); 
             res.end(JSON.stringify({ error: e.message }));
         }
         return;
     }
-    
     res.writeHead(404); 
     res.end();
 });
 
-// --- PROVIDER 1: Curious APIs ---
 async function getCuriousSources(imdb, type, season, episode) {
     let sources = [];
     try {
         const base = 'https://curiousapis.name.ng/stream_movies';
-        const url = type === 'movie' ? `${base}/movies/stream/movie?id=${imdb}` : `${base}/movies/stream/tv?id=${imdb}&season=${season}&episode=${episode}`;
+        const url = type === 'movie' 
+            ? `${base}/movies/stream/movie?id=${imdb}` 
+            : `${base}/movies/stream/tv?id=${imdb}&season=${season}&episode=${episode}`;
         
         console.log(`[Curious] Fetching: ${url}`);
         const r = await fetch(url);
@@ -94,12 +96,9 @@ async function getCuriousSources(imdb, type, season, episode) {
     return sources;
 }
 
-// --- PROVIDER 2: Stremio (Torrentio) ---
 async function getStremioSources(imdb, type, season, episode) {
     let sources = [];
     const sType = type === 'movie' ? 'movie' : 'series';
-    
-    // Stremio requires tt123456:1:1 format for TV shows
     const sId = type === 'movie' ? imdb : `${imdb}:${season}:${episode}`;
     console.log(`[Torrentio] Requesting Type: ${sType}, ID: ${sId}`);
 
@@ -115,16 +114,24 @@ async function getStremioSources(imdb, type, season, episode) {
                 console.log(`[Torrentio] Found ${d.streams.length} raw streams.`);
                 
                 const parsed = d.streams.map(s => {
-                    // Torrentio returns infoHash. We must convert it to a magnet link for Lumora.
                     let streamUrl = s.url;
+                    
+                    // If Torrentio only gives an infoHash, build a full magnet URI
                     if (!streamUrl && s.infoHash) {
                         streamUrl = `magnet:?xt=urn:btih:${s.infoHash}`;
                     }
+                    
                     if (!streamUrl) return null;
+
+                    // If it's a magnet link, append trackers so Lumora can find peers
+                    if (streamUrl.startsWith('magnet:')) {
+                        const trackerParams = TRACKERS.map(t => `&tr=${encodeURIComponent(t)}`).join('');
+                        streamUrl += trackerParams;
+                    }
                     
                     return {
                         label: s.name ? s.name.replace(/\n/g, ' ') : "Torrentio",
-                        type: streamUrl.includes('.m3u8') ? 'hls' : 'mp4', // Lumora will handle magnet mp4s
+                        type: streamUrl.includes('.m3u8') ? 'hls' : 'mp4',
                         url: streamUrl,
                         quality: s.title || "Unknown",
                         lang: "en"
