@@ -1,0 +1,7 @@
+{
+  "name": "Curious APIs",
+  "description": "Movies and TV from curiousapis",
+  "entry": "index.js",
+  "healthPath": "/health",
+  "hosts": ["curiousapis.name.ng"]
+}
