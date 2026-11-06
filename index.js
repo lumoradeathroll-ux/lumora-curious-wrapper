@@ -8,7 +8,6 @@ const MANAGER = {
     enableCurious: process.env.ENABLE_CURIOUS !== 'false',
     enableStremio: process.env.ENABLE_STREMIO !== 'false',
     stremioManifests: (process.env.STREMIO_URLS || '').split(','),
-    // New Proxy Settings
     proxyUrl: process.env.PROXY_URL || '',
     proxyPassword: process.env.PROXY_PASSWORD || ''
 };
@@ -58,12 +57,9 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(404); res.end();
 });
 
-// Helper function to wrap URLs with the proxy
 function applyProxy(originalUrl) {
     if (!MANAGER.proxyUrl || !MANAGER.proxyPassword) return originalUrl;
-    
-    // Format: http://proxy-ip:port/proxy?url=<encoded_url>&api_password=<password>
-    const proxyBase = MANAGER.proxyUrl.replace(/\/$/, ''); // Remove trailing slash if present
+    const proxyBase = MANAGER.proxyUrl.replace(/\/$/, '');
     return `${proxyBase}/proxy?url=${encodeURIComponent(originalUrl)}&api_password=${MANAGER.proxyPassword}`;
 }
 
@@ -71,10 +67,9 @@ async function getCuriousSources(imdb, type, season, episode) {
     let sources = [];
     try {
         const base = 'https://curiousapis.name.ng/stream_movies';
-        const url = type === 'movie' 
-            ? `${base}/movies/stream/movie?id=${imdb}` 
-            : `${base}/movies/stream/tv?id=${imdb}&season=${season}&episode=${episode}`;
+        const url = type === 'movie' ? `${base}/movies/stream/movie?id=${imdb}` : `${base}/movies/stream/tv?id=${imdb}&season=${season}&episode=${episode}`;
         
+        console.log(`[Curious] Fetching: ${url}`);
         const r = await fetch(url);
         const d = await r.json();
         
@@ -82,14 +77,12 @@ async function getCuriousSources(imdb, type, season, episode) {
             sources = d.sources.map(s => ({
                 label: "Curious", 
                 type: s.url?.includes('.m3u8') ? 'hls' : 'mp4', 
-                url: applyProxy(s.url), // Apply Proxy
+                url: applyProxy(s.url), 
                 quality: s.quality || "1080p", 
                 lang: "en"
             }));
         }
-    } catch (e) { 
-        console.error("[Curious] Error:", e.message); 
-    }
+    } catch (e) { console.error("[Curious] Error:", e.message); }
     return sources;
 }
 
@@ -103,10 +96,14 @@ async function getStremioSources(imdb, type, season, episode) {
     for (const manifest of MANAGER.stremioManifests) {
         try {
             const url = `${manifest}/stream/${sType}/${sId}.json`;
+            console.log(`[Stremio] Fetching: ${url}`);
             const r = await fetch(url);
             
             const contentType = r.headers.get("content-type");
-            if (contentType && contentType.includes("text/html")) continue; 
+            if (contentType && contentType.includes("text/html")) {
+                console.log(`[Stremio] Skipping (returned HTML)`);
+                continue; 
+            }
 
             const d = await r.json();
 
@@ -119,17 +116,16 @@ async function getStremioSources(imdb, type, season, episode) {
                     return {
                         label: s.name ? s.name.replace(/\n/g, ' ') : "HTTP Stream",
                         type: streamUrl.includes('.m3u8') ? 'hls' : 'mp4',
-                        url: applyProxy(streamUrl), // Apply Proxy
+                        url: applyProxy(streamUrl), 
                         quality: s.title || "Unknown",
                         lang: "en"
                     };
                 }).filter(Boolean);
                 
+                console.log(`[Stremio] Found ${parsed.length} streams.`);
                 sources.push(...parsed);
             }
-        } catch (e) { 
-            console.error(`[Stremio] Error:`, e.message); 
-        }
+        } catch (e) { console.error(`[Stremio] Error:`, e.message); }
     }
     return sources;
 }
