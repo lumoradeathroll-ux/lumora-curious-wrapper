@@ -1,0 +1,10 @@
+{
+  "name": "lumora-curious-wrapper",
+  "version": "1.0.0",
+  "description": "Lumora source wrapper for curiousapis",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  }
+}
