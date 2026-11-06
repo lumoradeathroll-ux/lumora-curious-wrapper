@@ -65,7 +65,7 @@ const server = http.createServer(async (req, res) => {
     res.end();
 });
 
-// 🛠️ The Fixed Proxy Function
+// 🛠️ The Fixed Proxy Function (Using 'd' parameter)
 function applyProxy(originalUrl) {
     if (!MANAGER.proxyUrl || !MANAGER.proxyPassword) return originalUrl;
     
@@ -78,7 +78,8 @@ function applyProxy(originalUrl) {
         endpoint = '/proxy/hls/manifest.m3u8';
     }
     
-    return `${proxyBase}${endpoint}?url=${encodeURIComponent(originalUrl)}&api_password=${MANAGER.proxyPassword}`;
+    // Use 'd' instead of 'url'
+    return `${proxyBase}${endpoint}?d=${encodeURIComponent(originalUrl)}&api_password=${MANAGER.proxyPassword}`;
 }
 
 // --- PROVIDER 1: Curious APIs ---
