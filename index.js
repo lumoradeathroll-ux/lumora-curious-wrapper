@@ -4,19 +4,10 @@ import { URL } from 'node:url';
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '127.0.0.1';
 
-// Public trackers to append to magnets so Lumora can actually download
-const TRACKERS = [
-    'udp://tracker.opentrackr.org:1337/announce',
-    'udp://open.stealth.si:80/announce',
-    'udp://tracker.torrent.eu.org:451/announce',
-    'udp://tracker.bittor.pw:1337/announce',
-    'udp://tracker.dler.org:6969/announce'
-];
-
 const MANAGER = {
     enableCurious: process.env.ENABLE_CURIOUS !== 'false',
     enableStremio: process.env.ENABLE_STREMIO !== 'false',
-    stremioManifests: (process.env.STREMIO_URLS || 'https://torrentio.strem.fun').split(',')
+    stremioManifests: (process.env.STREMIO_URLS || '').split(',')
 };
 
 const server = http.createServer(async (req, res) => {
@@ -77,7 +68,6 @@ async function getCuriousSources(imdb, type, season, episode) {
             ? `${base}/movies/stream/movie?id=${imdb}` 
             : `${base}/movies/stream/tv?id=${imdb}&season=${season}&episode=${episode}`;
         
-        console.log(`[Curious] Fetching: ${url}`);
         const r = await fetch(url);
         const d = await r.json();
         
@@ -100,37 +90,27 @@ async function getStremioSources(imdb, type, season, episode) {
     let sources = [];
     const sType = type === 'movie' ? 'movie' : 'series';
     const sId = type === 'movie' ? imdb : `${imdb}:${season}:${episode}`;
-    console.log(`[Torrentio] Requesting Type: ${sType}, ID: ${sId}`);
+
+    if (!MANAGER.stremioManifests[0]) return sources; // Skip if no URLs set
 
     for (const manifest of MANAGER.stremioManifests) {
         try {
             const url = `${manifest}/stream/${sType}/${sId}.json`;
-            console.log(`[Torrentio] Fetching URL: ${url}`);
-            
+            console.log(`[Stremio] Fetching: ${url}`);
             const r = await fetch(url);
             const d = await r.json();
 
-            if (d && d.streams && d.streams.length > 0) {
-                console.log(`[Torrentio] Found ${d.streams.length} raw streams.`);
-                
+            if (d && d.streams) {
                 const parsed = d.streams.map(s => {
                     let streamUrl = s.url;
-                    
-                    // If Torrentio only gives an infoHash, build a full magnet URI
-                    if (!streamUrl && s.infoHash) {
-                        streamUrl = `magnet:?xt=urn:btih:${s.infoHash}`;
-                    }
-                    
+                    if (!streamUrl && s.infoHash) streamUrl = `magnet:?xt=urn:btih:${s.infoHash}`;
                     if (!streamUrl) return null;
-
-                    // If it's a magnet link, append trackers so Lumora can find peers
-                    if (streamUrl.startsWith('magnet:')) {
-                        const trackerParams = TRACKERS.map(t => `&tr=${encodeURIComponent(t)}`).join('');
-                        streamUrl += trackerParams;
-                    }
+                    
+                    // Filter out magnet links!
+                    if (streamUrl.startsWith('magnet:')) return null;
                     
                     return {
-                        label: s.name ? s.name.replace(/\n/g, ' ') : "Torrentio",
+                        label: s.name ? s.name.replace(/\n/g, ' ') : "HTTP Stream",
                         type: streamUrl.includes('.m3u8') ? 'hls' : 'mp4',
                         url: streamUrl,
                         quality: s.title || "Unknown",
@@ -138,12 +118,11 @@ async function getStremioSources(imdb, type, season, episode) {
                     };
                 }).filter(Boolean);
                 
+                console.log(`[Stremio] Found ${parsed.length} playable HTTP streams.`);
                 sources.push(...parsed);
-            } else {
-                console.log(`[Torrentio] No streams found in response.`);
             }
         } catch (e) { 
-            console.error(`[Torrentio] Error:`, e.message); 
+            console.error(`[Stremio] Error:`, e.message); 
         }
     }
     return sources;
