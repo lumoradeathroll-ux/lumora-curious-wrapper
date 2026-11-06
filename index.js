@@ -7,7 +7,7 @@ const HOST = process.env.HOST || '127.0.0.1';
 const MANAGER = {
     enableCurious: process.env.ENABLE_CURIOUS !== 'false',
     enableStremio: process.env.ENABLE_STREMIO !== 'false',
-    stremioManifests: (process.env.STREMIO_URLS || '').split(','),
+    stremioManifests: (process.env.STREMIO_URLS || '').split(',').filter(Boolean),
     proxyUrl: process.env.PROXY_URL || '',
     proxyPassword: process.env.PROXY_PASSWORD || ''
 };
@@ -15,11 +15,13 @@ const MANAGER = {
 const server = http.createServer(async (req, res) => {
     const parsedUrl = new URL(req.url, `http://${req.headers.host}`);
     
+    // 1. Health Check
     if (parsedUrl.pathname === '/health') {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         return res.end('OK');
     }
 
+    // 2. Resolve Endpoint
     if (parsedUrl.pathname === '/lumora/v1/resolve') {
         const q = parsedUrl.searchParams;
         const type = q.get('type');
@@ -39,35 +41,54 @@ const server = http.createServer(async (req, res) => {
 
             const results = await Promise.allSettled(promises);
             let allSources = [];
+            
             for (const r of results) {
                 if (r.status === 'fulfilled' && Array.isArray(r.value)) {
                     allSources.push(...r.value);
                 }
             }
 
+            // Deduplicate by URL
             const unique = Array.from(new Map(allSources.map(s => [s.url, s])).values());
+            
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ sources: unique }));
+            
         } catch (e) {
             res.writeHead(500, { 'Content-Type': 'application/json' }); 
             res.end(JSON.stringify({ error: e.message }));
         }
         return;
     }
-    res.writeHead(404); res.end();
+    
+    res.writeHead(404); 
+    res.end();
 });
 
+// 🛠️ The Fixed Proxy Function
 function applyProxy(originalUrl) {
     if (!MANAGER.proxyUrl || !MANAGER.proxyPassword) return originalUrl;
+    
+    // Remove trailing slash if it exists
     const proxyBase = MANAGER.proxyUrl.replace(/\/$/, '');
-    return `${proxyBase}/proxy?url=${encodeURIComponent(originalUrl)}&api_password=${MANAGER.proxyPassword}`;
+    
+    // MediaFlow requires specific paths for different video types
+    let endpoint = '/proxy/stream'; 
+    if (originalUrl.includes('.m3u8')) {
+        endpoint = '/proxy/hls/manifest.m3u8';
+    }
+    
+    return `${proxyBase}${endpoint}?url=${encodeURIComponent(originalUrl)}&api_password=${MANAGER.proxyPassword}`;
 }
 
+// --- PROVIDER 1: Curious APIs ---
 async function getCuriousSources(imdb, type, season, episode) {
     let sources = [];
     try {
         const base = 'https://curiousapis.name.ng/stream_movies';
-        const url = type === 'movie' ? `${base}/movies/stream/movie?id=${imdb}` : `${base}/movies/stream/tv?id=${imdb}&season=${season}&episode=${episode}`;
+        const url = type === 'movie' 
+            ? `${base}/movies/stream/movie?id=${imdb}` 
+            : `${base}/movies/stream/tv?id=${imdb}&season=${season}&episode=${episode}`;
         
         console.log(`[Curious] Fetching: ${url}`);
         const r = await fetch(url);
@@ -82,10 +103,13 @@ async function getCuriousSources(imdb, type, season, episode) {
                 lang: "en"
             }));
         }
-    } catch (e) { console.error("[Curious] Error:", e.message); }
+    } catch (e) { 
+        console.error("[Curious] Error:", e.message); 
+    }
     return sources;
 }
 
+// --- PROVIDER 2: Stremio Addons (PenguPlay) ---
 async function getStremioSources(imdb, type, season, episode) {
     let sources = [];
     const sType = type === 'movie' ? 'movie' : 'series';
@@ -99,9 +123,10 @@ async function getStremioSources(imdb, type, season, episode) {
             console.log(`[Stremio] Fetching: ${url}`);
             const r = await fetch(url);
             
+            // Check for HTML errors (Cloudflare blocks, etc.)
             const contentType = r.headers.get("content-type");
             if (contentType && contentType.includes("text/html")) {
-                console.log(`[Stremio] Skipping (returned HTML)`);
+                console.log(`[Stremio] Skipping ${manifest} (returned HTML)`);
                 continue; 
             }
 
@@ -122,10 +147,12 @@ async function getStremioSources(imdb, type, season, episode) {
                     };
                 }).filter(Boolean);
                 
-                console.log(`[Stremio] Found ${parsed.length} streams.`);
+                console.log(`[Stremio] Found ${parsed.length} playable streams.`);
                 sources.push(...parsed);
             }
-        } catch (e) { console.error(`[Stremio] Error:`, e.message); }
+        } catch (e) { 
+            console.error(`[Stremio] Error:`, e.message); 
+        }
     }
     return sources;
 }
