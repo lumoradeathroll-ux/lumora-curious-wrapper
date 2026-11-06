@@ -1,7 +1,7 @@
 {
-  "name": "lumora-curious-wrapper",
-  "version": "1.0.0",
-  "description": "Lumora source wrapper for curiousapis",
+  "name": "lumora-ultimate-manager",
+  "version": "2.0.0",
+  "description": "All-in-one source manager for Lumora",
   "main": "index.js",
   "type": "module",
   "scripts": {
