@@ -4,20 +4,24 @@ import { URL } from 'node:url';
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '127.0.0.1';
 
+// --- 🎛️ MANAGER CONFIGURATION ---
 const MANAGER = {
     enableCurious: process.env.ENABLE_CURIOUS !== 'false',
     enableStremio: process.env.ENABLE_STREMIO !== 'false',
-    stremioManifests: (process.env.STREMIO_URLS || '').split(',')
+    // Default to AIOStreams and MediaFusion if no env vars are set
+    stremioManifests: (process.env.STREMIO_URLS || 'https://aiostreams.elfhosted.com,https://mediafusion.elfhosted.com').split(',')
 };
 
 const server = http.createServer(async (req, res) => {
     const parsedUrl = new URL(req.url, `http://${req.headers.host}`);
     
+    // 1. Health Check
     if (parsedUrl.pathname === '/health') {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         return res.end('OK');
     }
 
+    // 2. Resolve Endpoint
     if (parsedUrl.pathname === '/lumora/v1/resolve') {
         const q = parsedUrl.searchParams;
         const type = q.get('type');
@@ -32,6 +36,7 @@ const server = http.createServer(async (req, res) => {
 
         try {
             const promises = [];
+            
             if (MANAGER.enableCurious) {
                 promises.push(getCuriousSources(imdb, type, season, episode));
             }
@@ -41,25 +46,31 @@ const server = http.createServer(async (req, res) => {
 
             const results = await Promise.allSettled(promises);
             let allSources = [];
+            
             for (const r of results) {
                 if (r.status === 'fulfilled' && Array.isArray(r.value)) {
                     allSources.push(...r.value);
                 }
             }
 
+            // Deduplicate by URL
             const unique = Array.from(new Map(allSources.map(s => [s.url, s])).values());
+            
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ sources: unique }));
+            
         } catch (e) {
             res.writeHead(500, { 'Content-Type': 'application/json' }); 
             res.end(JSON.stringify({ error: e.message }));
         }
         return;
     }
+    
     res.writeHead(404); 
     res.end();
 });
 
+// --- PROVIDER 1: Curious APIs ---
 async function getCuriousSources(imdb, type, season, episode) {
     let sources = [];
     try {
@@ -68,6 +79,7 @@ async function getCuriousSources(imdb, type, season, episode) {
             ? `${base}/movies/stream/movie?id=${imdb}` 
             : `${base}/movies/stream/tv?id=${imdb}&season=${season}&episode=${episode}`;
         
+        console.log(`[Curious] Fetching: ${url}`);
         const r = await fetch(url);
         const d = await r.json();
         
@@ -86,27 +98,41 @@ async function getCuriousSources(imdb, type, season, episode) {
     return sources;
 }
 
+// --- PROVIDER 2: Stremio (AIOStreams / MediaFusion) ---
 async function getStremioSources(imdb, type, season, episode) {
     let sources = [];
     const sType = type === 'movie' ? 'movie' : 'series';
     const sId = type === 'movie' ? imdb : `${imdb}:${season}:${episode}`;
 
-    if (!MANAGER.stremioManifests[0]) return sources; // Skip if no URLs set
+    if (!MANAGER.stremioManifests[0]) return sources;
 
     for (const manifest of MANAGER.stremioManifests) {
         try {
             const url = `${manifest}/stream/${sType}/${sId}.json`;
             console.log(`[Stremio] Fetching: ${url}`);
             const r = await fetch(url);
+            
+            // 🛡️ Check if we got HTML back instead of JSON
+            const contentType = r.headers.get("content-type");
+            if (contentType && contentType.includes("text/html")) {
+                console.log(`[Stremio] Skipping ${manifest} (returned HTML instead of JSON)`);
+                continue; 
+            }
+
             const d = await r.json();
 
             if (d && d.streams) {
                 const parsed = d.streams.map(s => {
                     let streamUrl = s.url;
-                    if (!streamUrl && s.infoHash) streamUrl = `magnet:?xt=urn:btih:${s.infoHash}`;
-                    if (!streamUrl) return null;
                     
-                    // Filter out magnet links!
+                    // Build magnet if missing
+                    if (!streamUrl && s.infoHash) {
+                        streamUrl = `magnet:?xt=urn:btih:${s.infoHash}`;
+                    }
+                    
+                    if (!streamUrl) return null;
+
+                    // 🛑 FILTER: Lumora CANNOT play magnet links. Skip them entirely.
                     if (streamUrl.startsWith('magnet:')) return null;
                     
                     return {
@@ -118,7 +144,7 @@ async function getStremioSources(imdb, type, season, episode) {
                     };
                 }).filter(Boolean);
                 
-                console.log(`[Stremio] Found ${parsed.length} playable HTTP streams.`);
+                console.log(`[Stremio] Found ${parsed.length} playable HTTP streams from ${manifest}.`);
                 sources.push(...parsed);
             }
         } catch (e) { 
