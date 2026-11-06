@@ -65,21 +65,23 @@ const server = http.createServer(async (req, res) => {
     res.end();
 });
 
-// 🛠️ The Fixed Proxy Function (Using 'd' parameter)
+// 🛠️ Proxy Function with 428 Bypass Headers
 function applyProxy(originalUrl) {
     if (!MANAGER.proxyUrl || !MANAGER.proxyPassword) return originalUrl;
     
-    // Remove trailing slash if it exists
     const proxyBase = MANAGER.proxyUrl.replace(/\/$/, '');
     
-    // MediaFlow requires specific paths for different video types
     let endpoint = '/proxy/stream'; 
     if (originalUrl.includes('.m3u8')) {
         endpoint = '/proxy/hls/manifest.m3u8';
     }
     
-    // Use 'd' instead of 'url'
-    return `${proxyBase}${endpoint}?d=${encodeURIComponent(originalUrl)}&api_password=${MANAGER.proxyPassword}`;
+    // Pass required headers to bypass the 428 error
+    const referer = 'https://pengu.uk/';
+    const origin = 'https://pengu.uk';
+    const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+    
+    return `${proxyBase}${endpoint}?d=${encodeURIComponent(originalUrl)}&api_password=${MANAGER.proxyPassword}&h_referer=${encodeURIComponent(referer)}&h_origin=${encodeURIComponent(origin)}&h_user-agent=${encodeURIComponent(userAgent)}`;
 }
 
 // --- PROVIDER 1: Curious APIs ---
@@ -124,7 +126,6 @@ async function getStremioSources(imdb, type, season, episode) {
             console.log(`[Stremio] Fetching: ${url}`);
             const r = await fetch(url);
             
-            // Check for HTML errors (Cloudflare blocks, etc.)
             const contentType = r.headers.get("content-type");
             if (contentType && contentType.includes("text/html")) {
                 console.log(`[Stremio] Skipping ${manifest} (returned HTML)`);
